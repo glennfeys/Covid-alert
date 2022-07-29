@@ -1,0 +1,3 @@
+{
+    "databaseUrl": "mongodb://mongo:27017/infectionsuspect"
+}

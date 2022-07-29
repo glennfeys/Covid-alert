@@ -1,0 +1,50 @@
+<h2>Doctor Application</h2>
+<hr>
+
+<form id="doctorform" onSubmit="sendReport(event)">
+    <div id="successMessage" class="alert alert-success hidden">Successfully reported as infected</div>
+
+    <div class="form-group">
+        <label for="interactionFile">Interactions file of patient:</label>
+        <input type="file" class="form-control-file" id="interactionFile">
+    </div>
+
+    <button type="submit" class="btn btn-primary">Report as infected with Covid-19</button>
+</form>
+
+<script>
+    function sendReport(e) {
+        e.preventDefault();
+        // read file and send to the server
+        const reader = new FileReader();
+        reader.onload = handleFileLoad;
+        reader.readAsText(document.getElementById('interactionFile').files[0]);
+    }
+
+    function handleFileLoad(event) {
+        document.getElementById('doctorform').reset();
+
+        // file is loaded
+        sendInteractions(event.target.result);
+    }
+
+    async function sendInteractions(interactions) {
+        const payload = str2buffer(interactions);
+        const publicKeyCollectionServer = await getPublicKey();
+        const msg = await constructSignedMessageEncrypted(publicKeyCollectionServer, config.doctorPrivateKey, config.doctorPublicKey, payload);
+
+        const url = 'http://localhost:4000/contacts-reporting';
+        await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                msg: btoa(buffer2str(msg)),
+                size: payload.byteLength,
+            })
+        }).then(_ => {
+        document.getElementById('successMessage').classList.remove('hidden');
+        }).catch(e => alert('Error: ' + e));
+    }
+</script>

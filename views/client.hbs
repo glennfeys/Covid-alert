@@ -1,0 +1,214 @@
+<h2>Client Application</h2>
+<hr>
+
+<!-- Only visible in case we already generated a key. -->
+<!-- For the POC, I want the user to click the "generate" button so they can clearly see every step. -->
+<div id="formWrapper" class="hidden">
+    <div id="risk_info" class="container mt-3">
+        <h3 id="risk" class="alert alert-info">Loading risk status</h3>
+    </div>
+    <button type="button" onClick="updateRisk()" class="btn btn-danger">Check risk (manual refresh)</button>
+  <form onSubmit="receiveMessage(event)">
+    <div class="form-group">
+      <label for="recievedMessage">Recieved Message:</label>
+      <textarea class="form-control" id="recievedMessage" rows="3"></textarea>
+    </div>
+    <button type="submit" class="btn btn-success">Confirm</button>
+  </form>
+
+  <div class="mt-4">
+      <h3>Your client's Public Key:</h3>
+      <pre id="publicKey">
+          PUBLIC KEY PLACEHOLDER
+      </pre>
+  </div>
+
+  <div class="mt-2">
+      <h3>Your client is currently broadcasting:</h3>
+      <pre id="broadcastMessage"></pre>
+  </div>
+
+  <!-- BUTTONS -->
+  <div class="mt-5">
+    <button type="submit" onClick="downloadInteractions()" class="btn btn-primary">Download my client's interactions</button>
+
+    <!-- I believe this is useful for testing, and in case a format changes or mistakes you have easy access to a delete button -->
+    <button type="button" onClick="destroyData()" class="btn btn-danger">(DEBUG feature) Destroy my client's keypair &amp; interactions</button>
+  </div>
+</div>
+
+<div id="generateWrapper" class="hidden">
+  <p>
+    You don't have a client public-private keypair yet.
+    <br>
+    For the proof of concept, you have to click this button so you can clearly see what's going on.
+    In a real app, this would be done automatically.
+  </p>
+  <p>
+    <button type="button" onClick="generateMyKeyPair(event)" class="btn btn-primary">Generate my client's keypair</button>
+  </p>
+</div>
+
+<script>
+
+  const API_ENDPOINT = 'http://localhost:3000';
+
+  /**
+   * Downloads the interactions
+   */
+  function downloadInteractions() {
+    download('data:application/json;base64,' + btoa(localStorage.getItem('interactions')), 'interactions-' + (new Date).toISOString() + '.json');
+  }
+
+  /**
+   * Generate my client's keypair.
+   */
+  function generateMyKeyPair(e) {
+    const old = e.target.innerText;
+    e.target.innerText = "Generating...";
+    e.target.disabled = true;
+
+    forge.rsa.generateKeyPair({ bits: 2048, workers: -1 }, function(err, keypair) {
+      const publicKeyPem = forge.pki.publicKeyToPem(keypair.publicKey);
+      const privateKeyPem = forge.pki.privateKeyToPem(keypair.privateKey);
+
+      localStorage.setItem('publicKey', publicKeyPem);
+      localStorage.setItem('privateKey', privateKeyPem);
+      localStorage.setItem('interactions', '[]');
+      localStorage.setItem('latest_interaction', 0);
+      e.target.innerText = old;
+      e.target.disabled = false;
+      updateDisplay();
+    });
+  }
+
+  /**
+   * Generates the current broadcast message of the client.
+   */
+  function generateBroadcastMessage() {
+    // Get the public key and then construct the message
+    getPublicKey().then(publicKeyCollectionServer => {
+      // Now we have everything to create a signed, encrypted message
+      constructSignedMessageEncrypted(
+        publicKeyCollectionServer,
+        localStorage.getItem('privateKey'),
+        localStorage.getItem('publicKey'),
+        new Uint8Array() // We have no payload here
+      ).then(msg => {
+        // msg contains the message ready to be sent to other clients.
+        // msg is a buffer, so we need to make a visual representation.
+        const visualRepresentation = btoa(buffer2str(msg));
+        document.getElementById('broadcastMessage').innerText = visualRepresentation.match(/.{1,112}/g).join('\n');
+      }).catch(e => alert('Error: ' + e));
+    })
+    .catch(e => alert('Failed to get server public key: ' + e));
+  }
+
+  /**
+   * Process received message.
+   */
+  async function receiveMessage(e) {
+    e.preventDefault();
+
+    const receivedMessageElement = document.getElementById('recievedMessage');
+
+    // Encapsulate the received message inside a new, signed message (public key & private key of receiver).
+    // Encrypting this with the public key of the server is not necessary (yet).
+    // It only becomes necessary when we have to send this message.
+    const payload = str2buffer(atob(cleanString(receivedMessageElement.value)));
+    const publicKeyCollectionServer = await getPublicKey();
+    const msg = await constructSignedMessageEncrypted(publicKeyCollectionServer, localStorage.getItem('privateKey'), localStorage.getItem('publicKey'), payload);
+    receivedMessageElement.value = '';
+
+    // We can only store strings in localStorage.
+    const array = JSON.parse(localStorage.getItem('interactions')); // Ugly, but only a POC...
+    array.push(btoa(buffer2str(msg)));
+    localStorage.setItem('interactions', JSON.stringify(array));
+  }
+
+  /**
+   * Update what is visible and what not.
+   * Fill in data if necessary.
+   */
+  function updateDisplay() {
+    if (localStorage.getItem('publicKey') && localStorage.getItem('privateKey')) {
+      // We have keys, so we can use the form.
+      document.getElementById('formWrapper').classList.remove('hidden');
+      document.getElementById('generateWrapper').classList.add('hidden');
+      // Show PK
+      document.getElementById('publicKey').innerText = localStorage.getItem('publicKey');
+      document.getElementById('broadcastMessage').innerText = 'Loading...';
+
+      document.getElementById('risk').innerText = 'Loading risk status';
+
+      // Regenerate broadcast message
+      generateBroadcastMessage();
+      updateRisk();
+    } else {
+      // No keys, need to generate them.
+      document.getElementById('formWrapper').classList.add('hidden');
+      document.getElementById('generateWrapper').classList.remove('hidden');
+    }
+  }
+
+  /**
+   * Destroy current data.
+   * Can be useful for testing & in case someone makes a mistake with their localStorage etc.
+   */
+  function destroyData() {
+    localStorage.removeItem('publicKey');
+    localStorage.removeItem('privateKey');
+    localStorage.removeItem('interactions');
+    updateDisplay();
+  }
+
+  // Check for existence of keypair.
+  // If it exists, we can show the form, otherwise show the "generate keypair" div.
+  window.addEventListener('load', function(_e) {
+    updateDisplay();
+  }, false);
+
+  let interval = setInterval(updateRisk, 10 * 1000)
+
+  /*
+    *   Updates the view periodically,
+    *   hide the not relevant messages
+    */
+  async function updateRisk() {
+      let statusCode = await updateStatus()
+      if (statusCode == 200) {
+          document.getElementById('risk').innerText = "You are at risk"
+          document.getElementById('risk').classList.remove('alert-info')
+          document.getElementById('risk').classList.add('alert-danger')
+      } else if (statusCode == 404) {
+          document.getElementById('risk').innerText = "You are at no risk"
+          document.getElementById('risk').classList.add('alert-info')
+          document.getElementById('risk').classList.remove('alert-danger')
+      } else {
+          document.getElementById('risk').classList.add('alert-danger')
+          document.getElementById('risk').classList.remove('alert-info')
+          document.getElementById('risk').innerText = "Error: status code not recognized.\n " +
+                  "Try to refresh the webpage or wait a few seconds."
+          alert("Error: status code was not recognized: " + statusCode)
+      }
+  }
+
+  /*
+  * Periodically update display to check for new risk occurences
+  *   --> Generate a sha-256 hash of the public key to perform a call to check the risk status
+  *
+   */
+  async function updateStatus() {
+      let publicKey = cleanString(localStorage.getItem('publicKey'));
+      let publicKeyBase64 = btoa(publicKey)
+      return await fetch(API_ENDPOINT + '/risk/' + publicKeyBase64)
+              .then(res => res.text()
+                      .then(res => {
+                          let privateKeyPem = localStorage.getItem('privateKey')
+                          let privateKey = forge.pki.privateKeyFromPem(privateKeyPem)
+                          let message = JSON.parse(privateKey.decrypt(res))
+                          return message.status;
+                      }))
+              .catch(err => alert("Wrong key! Parse failed: " + err.message))
+  }
+</script>

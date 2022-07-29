@@ -1,0 +1,143 @@
+<h2>Reporting</h2>
+<hr>
+<div id="information" class="container mt-3">
+    <p id="latitude"></p>
+    <p id="longitude"></p>
+    <p id="interactions"></p>
+</div>
+<div id="information_not_supported" class="alert alert-danger hidden"></div>
+
+<div>
+  <p>
+    <button id="interactions_button" type="button" onClick="sendInteractions()" class="btn btn-primary">Send interactions</button>
+  </p>
+</div>
+
+<script>
+
+    // Update webpage every 3s for possible infections with COVID-19
+    //  advantage of setInterval over setTimeout = the function you pass as the first parameter is executed repeatedly
+    //  at no less than the number of milliseconds given by the second parameter apart, rather than once.
+    let interval = setInterval(updateView, 3 * 1000)
+
+    // Check every hour if old interactions exists in localStorage
+    let interval_destroy_interactions = setInterval(destroyOldInteractions, 1000 * 60 * 60)
+
+    async function debug(tokenId) {
+        console.log(tokenId);
+    }
+
+    async function sendInteractions() {
+        const url = 'http://localhost:4000/location-reporting'
+
+        const local_interactions = JSON.parse(localStorage.getItem('interactions'));
+        const latest = JSON.parse(localStorage.getItem('latest_interaction'));
+        let new_latest = latest;
+
+        let amount_of_messages = 0;
+        for(const interaction of local_interactions) {
+            const tsBuffer = str2buffer(atob(interaction)).slice(12+16+256, 12+16+256+8);
+            const tsUnix = new Float64Array(tsBuffer.buffer)[0];
+
+            if(tsUnix > latest) {
+                amount_of_messages++;
+                new_latest = tsUnix;
+            }
+        }
+
+        localStorage.setItem('latest_interaction', new_latest);
+
+        const token = await fetch('http://localhost:4000/token', {
+            method: 'GET'
+        }).then(res => res.text());
+
+        setTimeout(async function () {
+            await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    location: [localStorage.getItem('latitude'), localStorage.getItem('longitude')],
+                    amount_of_messages: amount_of_messages,
+                    token: token
+                })
+            }).catch(console.log);
+        }, 35000);
+    }
+
+    function getLocation() {
+        function onSucces(position) {
+            document.getElementById('information').classList.remove('hidden')
+            document.getElementById('information_not_supported').classList.add('hidden')
+            document.getElementById('interactions_button').classList.remove('hidden')
+            localStorage.setItem('latitude', JSON.stringify(position.coords.latitude))
+            localStorage.setItem('longitude', JSON.stringify(position.coords.longitude))
+
+            updateView();
+        }
+
+        function onError() {
+            document.getElementById('information').classList.add('hidden')
+            document.getElementById('information_not_supported').classList.remove('hidden')
+            document.getElementById('information_not_supported').innerText = "Geolocation is not supported by this browser."
+            updateView();
+        }
+
+        if(!navigator.geolocation) {
+            console.log('Your browser does not support geolocation.')
+        } else {
+            navigator.geolocation.getCurrentPosition(onSucces, onError)
+        }
+    }
+
+    /*
+    *   Updates the view periodically,
+    *   hide the not relevant messages
+    */
+    function updateView() {
+        document.getElementById("latitude").innerText = 'latitude: ' + localStorage.getItem('latitude')
+        document.getElementById("longitude").innerText = 'longitude: ' + localStorage.getItem('longitude')
+
+        const local_interactions = JSON.parse(localStorage.getItem('interactions'));
+        const latest = JSON.parse(localStorage.getItem('latest_interaction'));
+        const interactions = local_interactions.filter(interaction => {
+            const tsBuffer = str2buffer(atob(interaction)).slice(12+16+256, 12+16+256+8);
+            const tsUnix = new Float64Array(tsBuffer.buffer)[0];
+
+            return tsUnix > latest
+        })
+
+        document.getElementById("interactions").innerText = 'amount of interactions: ' + interactions.length
+    }
+
+    /*
+    * Remove interactions, that are expired, from database
+    *
+     */
+    function destroyOldInteractions() {
+        console.log("Checking for expired interactions...")
+
+        const interactions = JSON.parse(localStorage.getItem("interactions"));
+        const MAX_AGE = 1000 * 60 * 60 * 24 * 14; // 14 days
+
+        const newInteractions = interactions.filter(interaction => {
+            const tsBuffer = str2buffer(atob(interaction)).slice(12+16+256, 12+16+256+8);
+            const tsUnix = new Float64Array(tsBuffer.buffer)[0];
+            const differenceInMs = Date.now() - tsUnix;
+            console.log(differenceInMs);
+
+            return differenceInMs < MAX_AGE * 86400 * 1000;
+        });
+
+        localStorage.setItem('interactions', JSON.stringify(newInteractions));
+
+        console.log("Successfully removed expired interactions from localstorage.")
+        updateView()
+    }
+
+    window.addEventListener('load', function(_e) {
+        getLocation()
+        updateView()
+    }, false)
+</script>
